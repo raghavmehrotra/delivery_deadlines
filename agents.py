@@ -1,7 +1,6 @@
 from mesa import Agent
 import numpy as np
-
-import random
+import math
 
 class DeliveryAgent(Agent):
     # Initiate agent instance, inherit model trait from parent class
@@ -15,6 +14,10 @@ class DeliveryAgent(Agent):
 
         super().__init__(model)
         # Draws a risk threshold for each delivery worker from a normal distribution
+        # A risk_threshold of 0 means the worker always drives at speed_threshold, and 1 means
+        # that she always drives at the required velocity to meet the deadline (meaning higher
+        # chances of injury). 
+        # TODO: This is exogenously set, need to make it a function of savings
         self.risk_threshold = self.truncated_normal(mu, sigma, low, high)
 
         # Initialize all the agents to be idle at time t=0
@@ -29,8 +32,8 @@ class DeliveryAgent(Agent):
         # Workers have 0 earnings at t=0
         self.work_earnings = 0
 
-        # TODO: Draw savings from a truncated normal calibrated to urban Indian household income data
-        self.savings = 0
+        # TODO: These are arbitrary for now, will change later.
+        self.savings = self.truncated_normal(mu=20000, sigma=10000, low=0, high=50000)
 
         # Counts down from N while injured, worker cannot accept orders until it reaches 0
         self.injury_cooldown = 0
@@ -62,18 +65,18 @@ class DeliveryAgent(Agent):
             if low <= val <= high:
                 return val
 
-    def pick_move(self):
+    def calculate_actual_velocity(self):
         """
-        Implements the decision rule for the DeliveryAgent. [TODO: determine this]
+        Returns the velocity the agent will drive at, blending the
+        safe baseline (speed_threshold) and the deadline-required speed,
+        weighted by the agent's risk_threshold.
         """
+        required = self.calculate_required_velocity()
+        # The logic here is to weigh the actual velocity the worker chooses
+        # by the risk_threshold
+        return (1 - self.risk_threshold) * self.model.speed_threshold \
+             + self.risk_threshold * required
 
-        if self.is_idle:
-            pass
-            # Accept or reject an order (based on earnings, risk threshold)
-            # Determine a speed to drive at (based on risk threshold)
-
-        # if not idle, they are working, so assume that they can't accept the next
-        # order for now
 
     def step(self):
         """
@@ -87,15 +90,22 @@ class DeliveryAgent(Agent):
     def move_toward(self, destination):
         """
         Move the agent closer to destination using a Manhattan step
-        on the grid.
+        on the grid. Called up to round(velocity) times per tick from step().
 
         Params:
             destination: (x, y) tuple — the target cell on the grid.
         """
-        pass
-        # TODO: Figure out how this intersects with velocity. A higher velocity
-        # should advance the worker more steps on the grid. Round up/down to the 
-        # nearest integer to determine the number of steps?
+        # Uses the Manhattan distance to calculate how many horizontal and vertical
+        # moves are required
+        dx = destination[0] - self.pos[0]
+        dy = destination[1] - self.pos[1]
+
+        # Prioritize horizontal moves over vertical ones - this is arbitrary
+        if dx != 0:
+            new_pos = (self.pos[0] + (1 if dx > 0 else -1), self.pos[1])
+        else:
+            new_pos = (self.pos[0], self.pos[1] + (1 if dy > 0 else -1))
+        self.model.grid.move_agent(self, new_pos)
 
     def calculate_required_velocity(self):
         """
@@ -106,7 +116,17 @@ class DeliveryAgent(Agent):
             (float) Manhattan distance to destination divided by the number
             of time steps remaining until current_order["deadline"].
         """
-        pass
+        dist = abs(self.destination[0] - self.pos[0]) + abs(self.destination[1] - self.pos[1])
+
+        # The deadline is calculated as the global 'turn' or 'step' number of
+        # the model. So the difference is the number of steps left, within which
+        # the worker must make it to the destination
+        steps_remaining = self.current_order["deadline"] - self.model.steps
+        if steps_remaining <= 0:
+            # It is impossible to reach the destination
+            return float('inf')
+        
+        return dist / steps_remaining
 
     def resolve_accident_risk(self, velocity):
         """
