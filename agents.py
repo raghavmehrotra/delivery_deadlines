@@ -3,7 +3,7 @@ import numpy as np
 import math
 
 class DeliveryAgent(Agent):
-    # Initiate agent instance, inherit model trait from parent class
+    
     def __init__(self, model):
 
         super().__init__(model)
@@ -115,7 +115,7 @@ class DeliveryAgent(Agent):
                 self.is_injured = 0
 
         # Worker is not injured AND active. We don't do anything if the worker
-        # is idle. The model assigns orders to such workers
+        # is idle. The model assigns orders to such workers.
         elif not self.is_idle:
             # The model has reached the step number that exceeds the step number
             # by which the worker should have reached the destination, i.e. the 
@@ -153,7 +153,7 @@ class DeliveryAgent(Agent):
     def move_toward(self, destination):
         """
         Move the agent closer to destination using a Manhattan step
-        on the grid. Called up to round(velocity) times per tick from step().
+        on the grid. Called up to round(velocity) times from step().
 
         Params:
             destination: (x, y) tuple — the target cell on the grid.
