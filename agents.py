@@ -58,7 +58,7 @@ class DeliveryAgent(Agent):
             the bounds specified
         """
         while True:
-            val = np.random.normal(mu, sigma)
+            val = self.random.gauss(mu, sigma)
             if low <= val <= high:
                 return val
 
@@ -191,7 +191,7 @@ class DeliveryAgent(Agent):
         
         return dist / steps_remaining
 
-    def resolve_accident_risk(self, velocity, k=5):
+    def resolve_accident_risk(self, velocity, k=5, offset=1):
         """
         Given the worker's velocity this step, compute accident probability
         via a sigmoid on (velocity - model.speed_threshold), run a Bernoulli
@@ -201,11 +201,15 @@ class DeliveryAgent(Agent):
         Params:
             velocity: (float) the worker's speed this step.
             k: (int) parameter determining the steepness of the sigmoid function
+            offset: (int) moves the sigmoid center (p=0.5) to a threshold of 2.5.
+                The risk builds up gradually post 1.5 (45 km/hr) rather than being
+                0.5 exactly at the threshold
+            
         """
 
         # Similarly to the calculate_risk, this uses a normalized sigmoid
         # to calculate the probability of accident.
-        exponent = -k * (velocity - self.model.speed_threshold)
+        exponent = -k * (velocity - (self.model.speed_threshold + offset))
         p = 1.0 / (1.0 + math.exp(exponent))
         if self.random.random() < p:
             self.become_injured()

@@ -2,13 +2,13 @@ from model import DeliveryModel
 import matplotlib.pyplot as plt
 
 SEED = 42
-N_STEPS = 200
-DEFAULTS = {"delivery_deadline": 20, "n_workers": 30, "speed_threshold": 1.5}
+N_STEPS = 960
+DEFAULTS = {"delivery_deadline": 20, "n_workers": 90, "speed_threshold": 1.5}
 
 SWEEPS = {
-    "delivery_deadline": [5, 10, 15, 20, 30, 40, 60],
-    "n_workers":         [5, 10, 20, 30, 40, 50, 75, 100],
-    "speed_threshold":   [0.5, 1.0, 1.5, 2.0, 2.5, 3.0],
+    "delivery_deadline": [10, 15, 20, 30, 40, 60],
+    "n_workers":         [30, 60, 90, 120],
+    "speed_threshold":   [1.0, 1.5, 2.0, 2.5, 3.0],
 }
 
 
