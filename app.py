@@ -27,16 +27,8 @@ model_params = {
         "value": 90,
         "label": "N Workers",
         "min": 5,
-        "max": 100,
-        "step": 5,
-    },
-    "n_darkstores": {
-        "type": "SliderInt",
-        "value": 3,
-        "label": "N Dark Stores",
-        "min": 1,
-        "max": 10,
-        "step": 1,
+        "max": 300,
+        "step": 10,
     },
     "delivery_deadline": {
         "type": "SliderInt",
@@ -53,14 +45,6 @@ model_params = {
         "min": 0.5,
         "max": 4.0,
         "step": 0.1,
-    },
-    "cost_of_injury": {
-        "type": "SliderInt",
-        "value": 1000,
-        "label": "Cost of Injury (INR)",
-        "min": 100,
-        "max": 5000,
-        "step": 100,
     },
     "per_order_earnings": {
         "type": "SliderInt",
@@ -85,12 +69,13 @@ InjuryCountPlot = make_plot_component({"n_injuries_total": "tab:red", "n_injured
 InjuryCostPlot = make_plot_component({"total_injury_cost": "tab:orange"})
 OrdersMissedPlot = make_plot_component({"orders_missed": "tab:purple"})
 AvgEarningsPlot = make_plot_component({"avg_work_earnings": "tab:green"})
+AvgSavingsPlot = make_plot_component({"avg_savings": "tab:blue"})
 
 model = DeliveryModel()
 
 page = SolaraViz(
     model,
-    components=[SpaceGraph, InjuryCountPlot, InjuryCostPlot, OrdersMissedPlot, AvgEarningsPlot],
+    components=[SpaceGraph, InjuryCountPlot, InjuryCostPlot, OrdersMissedPlot, AvgEarningsPlot, AvgSavingsPlot],
     model_params=model_params,
     name="Quick Commerce Delivery ABM",
 )
