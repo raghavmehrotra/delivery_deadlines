@@ -6,19 +6,7 @@ class DeliveryAgent(Agent):
     # Initiate agent instance, inherit model trait from parent class
     def __init__(self, model):
 
-        # Static variables shared across agents
-        mu = 0.5
-        sigma = 0.2
-        low = 0
-        high = 1
-
         super().__init__(model)
-        # Draws a risk threshold for each delivery worker from a normal distribution
-        # A risk_threshold of 0 means the worker always drives at speed_threshold, and 1 means
-        # that she always drives at the required velocity to meet the deadline (meaning higher
-        # chances of injury). 
-        # TODO: This is exogenously set, need to make it a function of savings
-        self.risk_threshold = self.truncated_normal(mu, sigma, low, high)
 
         # Initialize all the agents to be idle at time t=0
         # Idle and working are complementary states. A worker is idle if they are 
@@ -32,10 +20,19 @@ class DeliveryAgent(Agent):
         # Workers have 0 earnings at t=0
         self.work_earnings = 0
 
-        # TODO: These are arbitrary for now, will change later.
-        self.savings = self.truncated_normal(mu=20000, sigma=10000, low=0, high=50000)
+        # From monthly per capita expditure (MPCE) using National Sample Survey data for
+        # families in urban Karnataka (capital Bangalore). Assumes 5% savings per month
+        # and that the delivery worker comes in with 6 months of savings.
+        # Mean is the average 6 months savings at 5% using the 60, 70 and 80th
+        # percentile MPCE from NSS data. std dev is 0.3 of the mean, high is 2 std
+        # devs away from the mean. See attached paper for details.
+        self.savings = self.truncated_normal(mu=44188, sigma=13256, low=0, high=70701)
 
-        # Counts down from N while injured, worker cannot accept orders until it reaches 0
+        # Calculates a risk threshold for each delivery worker as a function of
+        # their savings. High savings mean less likely to take risks, and vice versa.
+        self.risk_threshold = self.calculate_risk(self.savings, 0, 70701)
+
+        # Counts down from 5 while injured, worker cannot accept orders until it reaches 0
         self.injury_cooldown = 0
 
         # Set by the model when the worker is assigned an order; None when idle
@@ -65,27 +62,93 @@ class DeliveryAgent(Agent):
             if low <= val <= high:
                 return val
 
+    def calculate_risk(self, savings, low, high, k=10):
+        """
+        Applies a normalized sigmoid function to the worker's savings to
+        calculate their risk threshold. In general, higher prior savings means
+        the worker is less willing to take risks (and vice versa)
+
+        Params:
+            savings (int): Worker savings drawn from a normal distribution
+            low (int): global lower bound on savings
+            high (int): global upper bound on savings
+            k (int): scaling parameter for sigmoid to determine how flat
+                     the mapping is. Default of 10 to make the relationship
+                     steeper
+        Returns:
+            A normalized risk score between 0 and 1
+
+        """
+        savings_norm = (savings - low) / high
+        # Subtracting 0.5 to ensure that the sigmoid is 0 centered.
+        # Source: https://deepai.org/machine-learning-glossary-and-terms/sigmoidal-nonlinearity
+        # and Gemini conversation around the formula.
+        sigmoid = 1 / (1 + np.exp(-k * (savings_norm - 0.5)))
+
+        # To model the inverse relationship
+        return 1 - sigmoid
+
     def calculate_actual_velocity(self):
         """
         Returns the velocity the agent will drive at, blending the
-        safe baseline (speed_threshold) and the deadline-required speed,
+        safe baseline (safe_speed) and the deadline-required speed,
         weighted by the agent's risk_threshold.
         """
+
         required = self.calculate_required_velocity()
         # The logic here is to weigh the actual velocity the worker chooses
-        # by the risk_threshold
-        return (1 - self.risk_threshold) * self.model.speed_threshold \
+        # by the risk_threshold.
+        # We use the initial risk_threshold instead of dynamically calculating it
+        # for simplicity. A worker's risk_threshold does not evolve over time.
+        return (1 - self.risk_threshold) * self.model.safe_speed \
              + self.risk_threshold * required
 
 
     def step(self):
         """
-        Called once per model step. Does the following:
-          1. Injured: decrement injury_cooldown, change is_injured to 0 when cooldown hits 0.
-          2. Idle: Agent itself doesn't do anything. The model assigns it the order.
-          3. Not idle: move toward destination
+        Called once per model step. Follows logic based on one of three states
+        that the worker can be in: injured, idle, active
         """
-        pass
+        if self.is_injured:
+            self.injury_cooldown -= 1
+            if self.injury_cooldown == 0:
+                self.is_injured = 0
+
+        # Worker is not injured AND active. We don't do anything if the worker
+        # is idle. The model assigns orders to such workers
+        elif not self.is_idle:
+            # The model has reached the step number that exceeds the step number
+            # by which the worker should have reached the destination, i.e. the 
+            # order was not fulfilled.
+            if self.model.steps >= self.current_order["deadline"]:
+                self.model.orders_missed += 1
+                self.current_order = None
+                self.destination = None
+                self.is_idle = 1
+                return
+
+            # Order can still be fulfilled
+            velocity = self.calculate_actual_velocity()
+            self.resolve_accident_risk(velocity)
+
+            if not self.is_injured:
+                # Velocity is a real number, so we round this. e.g. if velocity
+                # is 1.6, n_steps is 2 and the worker can cover two squares in the
+                # direction of the destination. This overestimates how fast the worker
+                # goes, but is necessary with the current design.
+                n_steps = max(1, round(velocity))
+                for _ in range(n_steps):
+                    if self.pos == self.destination:
+                        break
+                    self.move_toward(self.destination)
+
+                if self.pos == self.destination:
+                    if self.destination == self.current_order["dark_store"].pos:
+                        # Arrived at dark store — switch to delivery leg
+                        self.destination = self.current_order["customer_pos"]
+                    else:
+                        # Arrived at customer
+                        self.complete_delivery()
 
     def move_toward(self, destination):
         """
@@ -128,32 +191,60 @@ class DeliveryAgent(Agent):
         
         return dist / steps_remaining
 
-    def resolve_accident_risk(self, velocity):
+    def resolve_accident_risk(self, velocity, k=5):
         """
         Given the worker's velocity this step, compute accident probability
         via a sigmoid on (velocity - model.speed_threshold), run a Bernoulli
         trial, and update worker state accordingly: call become_injured() if
-        the trial returns a 1. Call complete_delivery() if the worker has reached
-        the customer without an accident. 
+        the trial returns a 1.
 
         Params:
             velocity: (float) the worker's speed this step.
+            k: (int) parameter determining the steepness of the sigmoid function
         """
-        pass
+
+        # Similarly to the calculate_risk, this uses a normalized sigmoid
+        # to calculate the probability of accident.
+        exponent = -k * (velocity - self.model.speed_threshold)
+        p = 1.0 / (1.0 + math.exp(exponent))
+        if self.random.random() < p:
+            self.become_injured()
 
     def complete_delivery(self):
         """
         Increment work_earnings and savings by model.per_order_earnings,
         clear current_order and destination, and set is_idle to 1.
         """
-        pass
+
+        # Increment worker earnings and model params
+        self.work_earnings += self.model.per_order_earnings
+        self.savings += self.model.per_order_earnings
+        self.model.orders_fulfilled += 1
+        
+        # Worker is ready to accept a new order
+        self.current_order = None
+        self.destination = None
+        self.is_idle = 1
 
     def become_injured(self):
         """
         Mark worker as injured, start cooldown, deduct injury cost, and mark the current
         order as unfulfilled
         """
-        pass
+
+        # Worker suffers a fixed cost and can no longer accept new orders
+        self.is_injured = 1
+        self.injury_cooldown = self.model.injury_cooldown_duration
+        self.savings -= self.model.cost_of_injury
+        self.current_order = None
+        self.destination = None
+        self.is_idle = 1
+        
+        # Increment model params
+        self.model.orders_missed += 1
+        self.model.total_injury_cost += self.model.cost_of_injury
+        self.model.n_injuries_total += 1
+        
 
 
 class DarkStoreAgent(Agent):
@@ -164,8 +255,11 @@ class DarkStoreAgent(Agent):
         # Maximum number of orders the store can process simultaneously (exogenously set)
         self.capacity = capacity
 
-        # TODO: Get lambda from literature on quick commerce order volumes in Indian cities
-        self.arrival_rate = np.random.poisson(lam=5)
+        # Arrival rate calibration (1 step = 1 minute):
+        # Source: https://cmr.berkeley.edu/2026/01/the-dark-store-revolution-how-indias-10-minute-economy-is-redefining-retail-infrastructure/).
+        # See attached paper for calculations (in summary: 1800 orders per day, 
+        # stores open 16 hours.= 960 minutes. Arrival uniform at 1800/960 per step)
+        self.arrival_rate = 1.875
 
         # Active orders currently being fulfilled by workers; each entry is:
         # {"customer_pos": (x, y), "deadline": <int step>, "worker": <DeliveryAgent or None>}
@@ -183,33 +277,39 @@ class DarkStoreAgent(Agent):
           2. Promote orders from waiting_list into the queue to fill any
              slots freed up by workers who collected their orders this step.
         """
-        # TODO: Apply a time-of-day multiplier to arrival_rate to capture morning/evening demand peaks
+        
+        # Runs a Poisson draw for number of orders in this step
+        n_new = np.random.poisson(self.arrival_rate)
+        for _ in range(n_new):
+            order = {
+                "dark_store": self,
+                "customer_pos": self.random.choice(self.customer_locations),
+                "deadline": None, # assigned only when the worker begins driving to store
+                "worker": None,
+            }
+            if len(self.queue) < self.capacity:
+                self.queue.append(order)
+            else:
+                self.waiting_list.append(order)
 
-        # Generate new orders
-        # n_new_orders = Poisson draw using self.arrival_rate
-        # For each new order:
-        #   Build an order dict with customer_pos (random cell on grid), deadline (model.steps + model.delivery_deadline), worker=None
-        #   If there is space in the queue: append to queue
-        #   Else: append to waiting_list
-
-        # Promote from waiting_list to fill open queue slots
-        # While len(self.queue) < self.capacity and self.waiting_list is not empty:
-        #   Pop the first item from waiting_list and append it to queue
-        pass
+        # AI: Used Claude Code to find this missing piece -- it was important
+        # to empty the waiting list to account for orders fulfilled in the previous
+        # round.
+        while len(self.queue) < self.capacity and self.waiting_list:
+            self.queue.append(self.waiting_list.pop(0))
 
     def assign_order(self, worker):
         """
-        Assign the first queued order to the given worker. Sets the order's
-        worker field, sets worker.current_order and worker.destination to the
-        dark store's position (worker must travel here first to collect), and
-        sets worker.is_idle to 0.
+        Assign the first queued order to the given worker. Updates the relevant
+        fields.
 
         Params:
             worker: DeliveryAgent — an idle worker to assign the order to.
         """
-        # Pop the first order from self.queue
-        # order["worker"] = worker
-        # worker.current_order = order
-        # worker.destination = self.pos (worker heads to dark store first)
-        # worker.is_idle = 0
-        pass
+        order = self.queue.pop(0)
+        order["worker"] = worker
+        order["deadline"] = self.model.steps + self.model.delivery_deadline
+        worker.current_order = order
+        # Worker travels to dark store first to collect
+        worker.destination = self.pos
+        worker.is_idle = 0
